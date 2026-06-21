@@ -92,8 +92,6 @@ export default function Home() {
   const defaultCode = `${lockedFunctionSignature}\n    if state.distance < 0.5:\n        control.effort.x = 0\n        control.effort.y = 0\n    else:\n        control.effort.x = 1\n        control.effort.y = 1\n    return control\n`;
   const [code, setCode] = useState(defaultCode);
   const [scriptName, setScriptName] = useState("control.py");
-  const [savedScripts, setSavedScripts] = useState<string[]>([]);
-  const [scriptPickerValue, setScriptPickerValue] = useState<string>(NEW_SCRIPT_OPTION);
   
   const [robotIp, setRobotIp] = useState("localhost");
   const [backendPort, setBackendPort] = useState<number>(8000);
@@ -156,23 +154,48 @@ export default function Home() {
     }
   };
 
-  const saveCurrentScript = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "save_script", name: scriptName, code: getEditorCode() }));
+  const saveCurrentScript = async () => {
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      try {
+        const { save } = await import('@tauri-apps/plugin-dialog');
+        const filePath = await save({
+          filters: [{ name: 'Python script', extensions: ['py'] }],
+          defaultPath: scriptName,
+        });
+        if (filePath && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "save_script", path: filePath, code: getEditorCode() }));
+        }
+      } catch (e) {
+        console.error("Save script error", e);
+      }
+    } else {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "save_script", name: scriptName, code: getEditorCode() }));
+      }
     }
   };
 
-  const loadScript = (name: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "load_script", name }));
+  const loadScript = async () => {
+    if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const filePath = await open({
+          multiple: false,
+          directory: false,
+          filters: [{ name: 'Python script', extensions: ['py'] }]
+        });
+        if (filePath && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: "load_script", path: filePath as string }));
+        }
+      } catch (e) {
+        console.error("Load script error", e);
+      }
+    } else {
+      const name = prompt("Enter script name to load:");
+      if (name && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "load_script", name }));
+      }
     }
-  };
-
-  const startNewScript = () => {
-    setScriptPickerValue(NEW_SCRIPT_OPTION);
-    setScriptName("new_script.py");
-    setEditorCode(defaultCode);
-    setVerifyLogs(["New script template created."]);
   };
 
   useEffect(() => {
@@ -224,21 +247,13 @@ export default function Home() {
           if (typeof msg.path === "string" && msg.path.trim()) {
             setScriptsPath(msg.path);
           }
-        } else if (msg.type === "scripts_list") {
-          const scripts = Array.isArray(msg.scripts)
-            ? msg.scripts.filter((s: unknown) => typeof s === "string")
-            : [];
-          setSavedScripts(scripts);
         } else if (msg.type === "script_saved") {
           if (typeof msg.name === "string" && msg.name.trim()) {
             setScriptName(msg.name);
-            setScriptPickerValue(msg.name);
           }
-          requestScriptsList();
         } else if (msg.type === "script_loaded") {
           if (typeof msg.name === "string" && msg.name.trim()) {
             setScriptName(msg.name);
-            setScriptPickerValue(msg.name);
           }
           if (typeof msg.code === "string") {
             setEditorCode(msg.code);
@@ -784,28 +799,15 @@ export default function Home() {
                 >
                   Save
                 </Button>
-                <Select
-                  value={scriptPickerValue}
-                  onValueChange={(value) => {
-                    if (!value) return;
-                    if (value === NEW_SCRIPT_OPTION) {
-                      startNewScript();
-                      return;
-                    }
-                    setScriptPickerValue(value);
-                    loadScript(value);
-                  }}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8"
+                  onClick={loadScript}
+                  title="Load script from disk"
                 >
-                  <SelectTrigger className="w-44 h-8 text-xs border-0 bg-muted/50 focus:ring-0">
-                    <SelectValue placeholder="Saved scripts" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NEW_SCRIPT_OPTION}>new...</SelectItem>
-                    {savedScripts.map((name) => (
-                      <SelectItem key={name} value={name}>{name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  Load
+                </Button>
                 <div className="flex items-center gap-2">
                   <Select 
                     value={selectedRobotSerial} 

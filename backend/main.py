@@ -437,16 +437,25 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg.get('type') == 'save_script':
                 try:
                     code = msg.get('code', '')
-                    script_name = _write_script(msg.get('name', ''), code)
+                    if 'path' in msg:
+                        file_path = Path(msg['path'])
+                        file_path.write_text(code, encoding='utf-8')
+                        script_name = file_path.name
+                    else:
+                        script_name = _write_script(msg.get('name', ''), code)
                     await _send_json(websocket, {'type': 'script_saved', 'name': script_name})
-                    await _send_json(websocket, {'type': 'scripts_list', 'scripts': _list_scripts()})
                     await _send_json(websocket, {'type': 'log', 'data': f'Script saved: {script_name}'})
                 except Exception as e:
                     await _send_json(websocket, {'type': 'log', 'data': f'Script save error: {e}'})
 
             elif msg.get('type') == 'load_script':
                 try:
-                    script_name, script_code = _read_script(msg.get('name', ''))
+                    if 'path' in msg:
+                        file_path = Path(msg['path'])
+                        script_code = file_path.read_text(encoding='utf-8')
+                        script_name = file_path.name
+                    else:
+                        script_name, script_code = _read_script(msg.get('name', ''))
                     await _send_json(websocket, {'type': 'script_loaded', 'name': script_name, 'code': script_code})
                     await _send_json(websocket, {'type': 'log', 'data': f'Script loaded: {script_name}'})
                 except Exception as e:
