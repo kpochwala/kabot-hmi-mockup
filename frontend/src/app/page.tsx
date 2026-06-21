@@ -16,7 +16,6 @@ import { ChannelConfig, ScopeState, TriggerType } from "@/types/scope";
 
 const chartColors = ["#2563eb", "#16a34a", "#dc2626", "#d97706", "#9333ea", "#0891b2", "#be185d"];
 const lockedFunctionSignature = "def control(state: RobotState, control: RobotControl) -> RobotControl:";
-const NEW_SCRIPT_OPTION = "__new__";
 
 type ControlDirection = "up" | "down" | "left" | "right";
 
@@ -208,17 +207,23 @@ export default function Home() {
   }, [triggerSourceKey]);
 
   useEffect(() => {
-    wsRef.current = new WebSocket(`ws://${robotIp}:${backendPort}/ws`);
-    wsRef.current.onopen = () => {
-      sendControlTargetIp(controlTargetIp);
-      sendScriptsPath(scriptsPath);
-      requestScriptsList();
-    };
-    wsRef.current.onclose = () => {
-      setIsRunning(false);
-      setIsScanning(false);
-    };
-    wsRef.current.onmessage = (event) => {
+    let reconnectTimeout: ReturnType<typeof setTimeout>;
+    let isComponentMounted = true;
+
+    const connectWs = () => {
+      if (!isComponentMounted) return;
+      wsRef.current = new WebSocket(`ws://${robotIp}:${backendPort}/ws`);
+      wsRef.current.onopen = () => {
+        sendControlTargetIp(controlTargetIp);
+      };
+      wsRef.current.onclose = () => {
+        setIsRunning(false);
+        setIsScanning(false);
+        if (isComponentMounted) {
+          reconnectTimeout = setTimeout(connectWs, 2000);
+        }
+      };
+      wsRef.current.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "log") {
@@ -362,7 +367,17 @@ export default function Home() {
         }
       } catch(e) {}
     };
-    return () => wsRef.current?.close();
+    };
+
+    connectWs();
+    return () => {
+      isComponentMounted = false;
+      clearTimeout(reconnectTimeout);
+      if (wsRef.current) {
+          wsRef.current.onclose = null;
+          wsRef.current.close();
+      }
+    };
   }, [robotIp, backendPort]);
 
   const handleEditorMount = (editor: any, monaco: any) => {
@@ -784,7 +799,6 @@ export default function Home() {
                   value={scriptName}
                   onChange={(e) => {
                     setScriptName(e.target.value);
-                    setScriptPickerValue(NEW_SCRIPT_OPTION);
                   }}
                   className="w-44 h-8 text-xs font-mono"
                   placeholder="script name"

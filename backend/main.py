@@ -352,10 +352,20 @@ async def udp_loop():
         except Exception as e:
             await asyncio.sleep(0.01)
 
+original_ppid = os.getppid()
+
+async def check_parent_alive():
+    while True:
+        if os.getppid() != original_ppid:
+            print("Parent process died or reparented. Exiting.")
+            os._exit(0)
+        await asyncio.sleep(1)
+
 @app.on_event('startup')
 async def startup_event():
     asyncio.create_task(udp_loop())
     asyncio.create_task(perform_discovery_sweep())
+    asyncio.create_task(check_parent_alive())
 
 @app.websocket('/ws')
 async def websocket_endpoint(websocket: WebSocket):
