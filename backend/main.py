@@ -409,7 +409,7 @@ async def continuous_ping():
             fail_count += 1
             if fail_count >= 3:
                 print(f"Ping failed {fail_count} times. Disconnecting.")
-                await _broadcast_json({'type': 'robot_disconnected'})
+                await _broadcast_json({'type': 'robot_disconnected', 'ip': udp_target_ip})
                 udp_target_ip = None
                 fail_count = 0
                 last_ping_status = 'disconnected'
@@ -597,6 +597,19 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         if websocket in active_connections:
             active_connections.remove(websocket)
+        if not active_connections:
+            if udp_target_ip:
+                try:
+                    rel_req = pb2.Bonjour()
+                    rel_req.hmi_port = UDP_STATE_PORT
+                    rel_req.release = True
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rel_sock:
+                        rel_sock.bind(("0.0.0.0", 0))
+                        rel_sock.settimeout(0.5)
+                        rel_sock.sendto(rel_req.SerializeToString(), (udp_target_ip, 30012))
+                except Exception:
+                    pass
+                udp_target_ip = None
 
 if __name__ == '__main__':
     import uvicorn

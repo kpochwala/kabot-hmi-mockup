@@ -313,6 +313,7 @@ export default function Home() {
           setConnectedRobot(null);
           setRobotConnectionStatus('disconnected');
           setSelectedRobotSerial("");
+          setDiscoveredRobots(prev => prev.filter(r => r.ip !== msg.ip));
         } else if (msg.type === "robot_released") {
           setConnectedRobot(null);
           setRobotConnectionStatus('disconnected');
