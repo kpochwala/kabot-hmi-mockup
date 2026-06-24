@@ -20,7 +20,7 @@ This document tracks a major sequence of architectural and UI improvements made 
   - **Robot Status:** Extracts and displays live Bonjour discovery data for the connected robot (IP, Serial, Human Name, Firmware Version, Port, and Claim Status).
 - **Cleanup:** Removed unused Serial/Baud rate and Motor Type dropdowns. Hid the "Device Shell Output" panel.
 - **WIP Features:** The "Connect Robot" and "Firmware Update" dialogs were disabled and replaced with temporary alerts ("This functionality will be available soon. Sorry.").
-- **Updated Links:** Added direct links to the `kabot-zephyr` repository, `kabot-hmi-mockup` repository, and the KABOT Discord channel.
+- **Updated Links:** Added direct links to the `kabot-zephyr` repository, `kabot-hmi` repository, and the KABOT Discord channel.
 
 ### 4. Plotter & Signal Browser Improvements
 - **Layout Persistence:** Implemented local storage caching for the plotter. The visibility, y-offset, y-scale, and trigger settings for all channels are now seamlessly saved to `localStorage("plot_layout")` and restored on application boot. 
