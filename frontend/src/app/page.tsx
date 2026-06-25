@@ -271,40 +271,52 @@ export default function Home() {
           if (msg.data.includes("Runtime Error:") || msg.data.includes("Stopped user script.") || msg.data.includes("Error parsing script:")) setIsRunning(false);
           if (msg.data.includes("Discovery sweep finished. No robots found.")) setIsScanning(false);
           
-          if (msg.data.includes("Traceback") || msg.data.includes("Error parsing script:")) {
+          if (msg.data.includes("Traceback") || msg.data.includes("Error parsing script:") || msg.data.includes("Warning parsing script:")) {
+            const isWarning = msg.data.includes("Warning parsing script:");
             const lines = msg.data.split("\n").filter((l: string) => l.trim().length > 0);
-            let errLineNum = -1;
-            let errMsg = lines[lines.length - 1]?.trim() || "Error";
-            for (let i = lines.length - 1; i >= 0; i--) {
-              const match = lines[i].match(/File "<user_code>", line (\d+)/);
-              if (match) {
-                errLineNum = parseInt(match[1], 10);
-                break;
-              }
-            }
-            if (errLineNum > 0 && editorRef.current && monacoRef.current) {
-              const m = monacoRef.current;
-              const model = editorRef.current.getModel();
-              const maxCol = model ? model.getLineMaxColumn(errLineNum) : 1;
-              decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, [
-                {
-                  range: new m.Range(errLineNum, 1, errLineNum, 1),
-                  options: {
-                    isWholeLine: true,
-                    className: 'error-line-highlight'
-                  }
-                },
-                {
-                  range: new m.Range(errLineNum, 1, errLineNum, maxCol),
-                  options: {
-                    inlineClassName: 'error-squiggle',
-                    after: {
-                      content: `    ${errMsg}`,
-                      inlineClassName: 'error-inline-text text-red-500'
+            const globalErrMsg = lines[lines.length - 1]?.trim() || "Error";
+            
+            const newDecorations: any[] = [];
+            const m = monacoRef.current;
+            const model = editorRef.current?.getModel();
+            
+            if (m && model) {
+                const blocks = msg.data.split(/File "<user_code>", line /);
+                
+                const blocksToProcess = isWarning ? blocks.slice(1) : (blocks.length > 1 ? [blocks[blocks.length - 1]] : []);
+
+                blocksToProcess.forEach(block => {
+                    const blockLines = block.split("\n").filter((l: string) => l.trim().length > 0);
+                    const lineNumMatch = blockLines[0].match(/^(\d+)/);
+                    if (lineNumMatch) {
+                        const errLineNum = parseInt(lineNumMatch[1], 10);
+                        const errMsg = isWarning ? (blockLines[blockLines.length - 1]?.trim() || "Warning") : globalErrMsg;
+                        
+                        const maxCol = model.getLineMaxColumn(errLineNum) || 1;
+                        const lineCount = model.getLineCount() || 1;
+
+                        newDecorations.push({
+                          range: new m.Range(errLineNum, 1, errLineNum, 1),
+                          options: {
+                            isWholeLine: true,
+                            className: isWarning ? 'warning-line-highlight' : 'error-line-highlight'
+                          }
+                        });
+                        newDecorations.push({
+                          range: new m.Range(errLineNum, 1, errLineNum, maxCol),
+                          options: {
+                            inlineClassName: isWarning ? 'warning-squiggle' : 'error-squiggle',
+                            after: {
+                              content: `    ${errMsg}`,
+                              inlineClassName: isWarning ? 'warning-inline-text text-yellow-500' : 'error-inline-text text-red-500'
+                            }
+                          }
+                        });
                     }
-                  }
+                });
+                if (newDecorations.length > 0) {
+                  decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, newDecorations);
                 }
-              ]);
             }
           }
         } else if (msg.type === "robots_discovered") {
