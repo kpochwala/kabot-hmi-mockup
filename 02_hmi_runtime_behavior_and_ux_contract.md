@@ -23,6 +23,12 @@ This document defines expected HMI behavior as an implementation contract for de
 - Series reset if producer time goes backward to avoid visual discontinuities
 - Zero line shown only where axis range crosses zero
 
+## Script Editor Contract
+
+- Scripts are executed immediately without static type verification (syntax checking only).
+- Backend gracefully identifies UDP port conflicts on startup and displays actionable modals in the HMI.
+- The active Robot Connection selector is centralized in the Settings modal body.
+
 ## SMP Terminal Contract
 
 ### Terminal layout and flow

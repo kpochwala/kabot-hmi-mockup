@@ -14,6 +14,7 @@ import { Check, ArrowRight, Square, Search, Settings, TerminalSquare, Activity, 
 import { UPlotScope } from "@/components/ui/UPlotScope";
 import { SpinBox } from "@/components/ui/spinbox";
 import { ChannelConfig, ScopeState, TriggerType } from "@/types/scope";
+import packageJson from "../../package.json";
 
 const chartColors = ["#2563eb", "#16a34a", "#dc2626", "#d97706", "#9333ea", "#0891b2", "#be185d"];
 const lockedFunctionSignature = "def control(state: RobotState, control: RobotControl) -> RobotControl:";
@@ -46,6 +47,7 @@ const scriptSchema = {
 
 export default function Home() {
   const [logs, setLogs] = useState<string[]>([]);
+  const [portConflictError, setPortConflictError] = useState<number | null>(null);
 
   const handleLinkClick = async (e: React.MouseEvent<HTMLAnchorElement>, url: string) => {
     e.preventDefault();
@@ -285,7 +287,7 @@ export default function Home() {
                 
                 const blocksToProcess = isWarning ? blocks.slice(1) : (blocks.length > 1 ? [blocks[blocks.length - 1]] : []);
 
-                blocksToProcess.forEach(block => {
+                blocksToProcess.forEach((block: string) => {
                     const blockLines = block.split("\n").filter((l: string) => l.trim().length > 0);
                     const lineNumMatch = blockLines[0].match(/^(\d+)/);
                     if (lineNumMatch) {
@@ -388,6 +390,8 @@ export default function Home() {
           setDiscoveredRobots(prev => prev.map(r => 
             (msg.ip ? r.ip === msg.ip : true) ? { ...r, is_claimed: false, is_claimed_by_us: false } : r
           ));
+        } else if (msg.type === "port_conflict") {
+          setPortConflictError(msg.port);
         } else if (msg.type === "state") {
           const d = msg.data;
           const s = msg.stamps || {};
@@ -712,16 +716,6 @@ export default function Home() {
     }
   };
 
-  const handleVerify = () => {
-    const runtimeCode = getEditorCode();
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      setLogs([]);
-      if (editorRef.current && monacoRef.current) {
-        decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, []);
-      }
-      wsRef.current.send(JSON.stringify({ type: "verify", code: runtimeCode }));
-    }
-  };
 
   const handleStop = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -1047,7 +1041,6 @@ export default function Home() {
                 {!isRunning ? (
                   <>
                   <Button size="sm" variant="default" className="font-bold w-[140px]" onClick={handleRun} disabled={isRunning || robotConnectionStatus !== 'connected'} title="Run script"><Play className="w-4 h-4 mr-2" /> Run script</Button>
-                  <Button size="sm" variant="outline" className="font-bold w-[140px]" onClick={handleVerify} disabled={isRunning} title="Verify script syntax"><Check className="w-4 h-4 mr-2" /> Verify syntax</Button>
                   </>
                 ) : (
                   <Button size="sm" variant="destructive" className="font-bold animate-pulse w-[140px]" onClick={handleStop} title="Stop"><Square className="w-4 h-4 mr-2 fill-current" /> Stop ({hzStats['state'] || '0.0'} Hz)</Button>
@@ -1349,7 +1342,7 @@ export default function Home() {
                                 </div>
                                 <div className="flex flex-col">
                                     <span className="text-muted-foreground text-xs">HMI Version</span>
-                                    <span className="font-medium mt-1">v1.0.0-mockup</span>
+                                    <span className="font-medium mt-1">v{packageJson.version}</span>
                                 </div>
                                 <div className="flex flex-col">
                                     <span className="text-muted-foreground text-xs">Links</span>
@@ -1364,10 +1357,15 @@ export default function Home() {
 
                         {/* Robot Status */}
                         <div className="flex flex-col gap-3">
-                            <div className="flex items-center justify-between border-b pb-1">
-                                <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">Robot Status</h3>
-                                {renderRobotSelector()}
+                            <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground border-b pb-1">Robot Status</h3>
+                            
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                                <div className="flex flex-col">
+                                    <span className="text-muted-foreground text-xs mb-1">Robot Connection</span>
+                                    <div className="w-fit">{renderRobotSelector()}</div>
+                                </div>
                             </div>
+                            
                             {connectedRobot ? (
                                 <div className="grid grid-cols-2 gap-4 text-sm mt-2">
                                     <div className="flex flex-col">
@@ -1409,6 +1407,27 @@ export default function Home() {
             )}
         </div>
       </div>
+      
+      {/* Port Conflict Modal */}
+      <Dialog open={portConflictError !== null} onOpenChange={(open) => { if (!open) setPortConflictError(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              Port Conflict Error
+            </DialogTitle>
+            <div className="text-sm text-muted-foreground">
+              <div className="space-y-4 pt-4 text-foreground">
+                <p>The backend could not bind to UDP port <span className="font-bold">{portConflictError}</span> because another process is already using it.</p>
+                <p>Please ensure that no other instances of Kabot backend are running. You can find the process holding this port using the following command:</p>
+                <div className="bg-muted p-2 rounded text-xs font-mono select-all overflow-x-auto whitespace-nowrap border border-border">
+                  sudo netstat -anup | grep {portConflictError}
+                </div>
+              </div>
+            </div>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

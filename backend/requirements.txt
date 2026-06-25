@@ -3,4 +3,3 @@ uvicorn
 websockets
 protobuf
 psutil
-mypy

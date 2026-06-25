@@ -39,128 +39,6 @@ active_connections = []
 
 
 def verify_script(code_text: str):
-    import ast
-    import traceback
-    import tempfile
-    import os
-    from mypy import api
-    
-    class SemanticChecker(ast.NodeVisitor):
-        def __init__(self):
-            self.errors = []
-        
-        def visit_Module(self, node):
-            has_control = any(isinstance(n, ast.FunctionDef) and n.name == 'control' for n in node.body)
-            if not has_control:
-                first_node = node.body[0] if getattr(node, 'body', None) else node
-                if not hasattr(first_node, 'lineno'):
-                    first_node.lineno = 1
-                    first_node.col_offset = 0
-                self.errors.append((first_node, "TypeError: Script must define a function named 'control'"))
-            self.generic_visit(node)
-            
-        def visit_FunctionDef(self, node):
-            if node.name == 'control':
-                if len(node.args.args) < 2:
-                    self.errors.append((node, "TypeError: 'control' must accept at least two parameters: state and control"))
-                
-                has_return = False
-                for n in ast.walk(node):
-                    if isinstance(n, ast.Return):
-                        has_return = True
-                        if n.value is None:
-                            self.errors.append((n, "TypeError: Function 'control' must return a value (expected RobotControl)"))
-                if not has_return:
-                    self.errors.append((node, "TypeError: Function 'control' is missing a return statement"))
-            self.generic_visit(node)
-
-        def visit_Attribute(self, node):
-            chain = []
-            curr = node
-            while isinstance(curr, ast.Attribute):
-                chain.append(curr.attr)
-                curr = curr.value
-            if isinstance(curr, ast.Name):
-                chain.append(curr.id)
-                chain.reverse()
-                full_path = ".".join(chain)
-                
-                if chain[0] == 'control':
-                    valid = ['control', 'control.effort', 'control.effort.x', 'control.effort.y']
-                    if full_path not in valid:
-                        self.errors.append((node, f"AttributeError: invalid attribute '{full_path}'"))
-                elif chain[0] == 'state':
-                    valid_state_attrs = [
-                        'distance', 'effort', 'linear_acceleration', 'angular_velocity', 'magnetic_field',
-                        'light_left', 'light_right', 'current_left', 'bus_voltage_left', 'power_left',
-                        'current_right', 'bus_voltage_right', 'power_right', 'current_supply',
-                        'bus_voltage_supply', 'power_supply', 'stamps'
-                    ]
-                    valid_vec2 = ['x', 'y']
-                    valid_vec3 = ['x', 'y', 'z']
-                    is_valid = False
-                    if len(chain) == 2 and chain[1] in valid_state_attrs:
-                        is_valid = True
-                    elif len(chain) == 3:
-                        if chain[1] == 'effort' and chain[2] in valid_vec2:
-                            is_valid = True
-                        elif chain[1] in ['linear_acceleration', 'angular_velocity', 'magnetic_field'] and chain[2] in valid_vec3:
-                            is_valid = True
-                    elif len(chain) == 1:
-                        is_valid = True
-                    if not is_valid:
-                        self.errors.append((node, f"AttributeError: invalid attribute '{full_path}'"))
-            self.generic_visit(node)
-
-    tree = ast.parse(code_text, filename="<user_code>")
-    checker = SemanticChecker()
-    checker.visit(tree)
-    
-    code_with_imports = "from models import RobotState, RobotControl, Vector2, Vector3\nimport math\n" + code_text
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, dir=".") as f:
-        f.write(code_with_imports)
-        temp_path = f.name
-        
-    try:
-        result, _, _ = api.run([temp_path, '--show-column-numbers', '--ignore-missing-imports', '--follow-imports=skip'])
-        base_name = os.path.basename(temp_path)
-        for line in result.splitlines():
-            if line.startswith(base_name):
-                parts = line.split(":", 4)
-                if len(parts) >= 5:
-                    lineno = int(parts[1]) - 2
-                    col = int(parts[2])
-                    msg_type = parts[3].strip()
-                    msg_text = parts[4].strip()
-                    if lineno > 0:
-                        class DummyNode:
-                            pass
-                        n = DummyNode()
-                        n.lineno = lineno
-                        n.col_offset = col - 1
-                        checker.errors.append((n, f"{msg_type.capitalize()}: {msg_text}"))
-    finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-    
-    if checker.errors:
-        err_strs = []
-        for node, msg_err in checker.errors:
-            err = SyntaxError(msg_err)
-            err.filename = "<user_code>"
-            err.lineno = node.lineno
-            err.offset = getattr(node, 'col_offset', 0) + 1
-            lines = code_text.splitlines()
-            err.text = lines[node.lineno - 1] + "\n" if 0 <= node.lineno - 1 < len(lines) else "\n"
-            err_lines = traceback.format_exception_only(type(err), err)
-            err_str = "".join(err_lines).strip()
-            err_str = err_str.replace("SyntaxError: ", "")
-            err_strs.append(err_str)
-        
-        full_err_str = "\n\n".join(err_strs)
-        return f"Warning parsing script:\n{full_err_str}"
     return ""
 
 def _build_user_callable(code: str):
@@ -340,13 +218,14 @@ def encode_control(ctrl: RobotControl) -> bytes:
     msg.effort.state.y = ctrl.effort.y
     return msg.SerializeToString()
 
+backend_port_conflict = None
+
 sock_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 try:
-    sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-except AttributeError:
-    pass
-sock_recv.bind(('0.0.0.0', UDP_STATE_PORT))
+    sock_recv.bind(('0.0.0.0', UDP_STATE_PORT))
+except OSError:
+    backend_port_conflict = UDP_STATE_PORT
 sock_recv.setblocking(False)
 
 sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -464,8 +343,11 @@ async def perform_discovery_sweep():
     sock_discover.close()
 
 async def udp_loop():
-    global current_user_code, current_user_callable
+    global current_user_code, current_user_callable, backend_port_conflict
     while True:
+        if backend_port_conflict:
+            await asyncio.sleep(1)
+            continue
         try:
             data, addr = sock_recv.recvfrom(2048)
             if not udp_target_ip or addr[0] != udp_target_ip:
@@ -589,6 +471,8 @@ async def startup_event():
 @app.websocket('/ws')
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    if backend_port_conflict:
+        await websocket.send_json({'type': 'port_conflict', 'port': backend_port_conflict})
     active_connections.append(websocket)
     global current_user_code, current_user_callable, udp_target_ip, scripts_dir
     global current_user_code, current_user_callable, udp_target_ip, UDP_CONTROL_PORT, scripts_dir
@@ -605,10 +489,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 code = msg.get('code', '')
                 import traceback
                 try:
-                    warnings = verify_script(code)
-                    if warnings:
-                        await _broadcast_log('Script Validation', warnings)
-                        
                     user_callable = _build_user_callable(code)
                     current_user_code = code
                     await _send_json(websocket, {'type': 'run_result', 'ok': True, 'message': 'Running.'})
