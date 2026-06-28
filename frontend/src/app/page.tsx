@@ -1421,7 +1421,7 @@ export default function Home() {
                         }
                     }}
                     title="Refresh Firmware Status"
-                    disabled={isFetchingFirmware || !(manualSmpIp || displayRobot?.ip)}
+                    disabled={isFetchingFirmware || isFlashingFirmware || !(manualSmpIp || displayRobot?.ip)}
                 >
                     <RefreshCw className={`w-4 h-4 ${isFetchingFirmware ? 'animate-spin text-muted-foreground' : ''}`} />
                 </Button>
