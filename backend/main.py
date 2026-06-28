@@ -139,27 +139,27 @@ async def fetch_firmware_status(ip: str):
 
     async with _firmware_fetch_locks[ip]:
         async with _discovery_lock:
-            # Check if this robot is currently claimed
+            # ALWAYS send a release packet before SMP, even if the HMI doesn't think it owns the claim
+            # The robot might have saved a previous claim to NVS and is aggressively sending telemetry!
             was_claimed = (udp_target_ip == ip)
-            if was_claimed:
-                await _broadcast_log('HMI', f"Temporarily releasing {ip} to safely fetch firmware via SMP")
-                try:
-                    rel_req = pb2.Bonjour()
-                    rel_req.hmi_port = UDP_STATE_PORT
-                    rel_req.release = True
-                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rel_sock:
-                        rel_sock.bind(("0.0.0.0", 0))
-                        rel_sock.settimeout(0.5)
-                        rel_sock.sendto(rel_req.SerializeToString(), (ip, 30012))
-                        try:
-                            rel_sock.recvfrom(2048)
-                        except TimeoutError:
-                            pass
-                except Exception as e:
-                    await _broadcast_log('HMI', f"Error during temp release: {e}")
-                
-                # Pause background pings immediately
-                udp_target_ip = None
+            await _broadcast_log('HMI', f"Silencing {ip} telemetry to safely perform SMP operation")
+            try:
+                rel_req = pb2.Bonjour()
+                rel_req.hmi_port = UDP_STATE_PORT
+                rel_req.release = True
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rel_sock:
+                    rel_sock.bind(("0.0.0.0", 0))
+                    rel_sock.settimeout(0.5)
+                    rel_sock.sendto(rel_req.SerializeToString(), (ip, 30012))
+                    try:
+                        rel_sock.recvfrom(2048)
+                    except TimeoutError:
+                        pass
+            except Exception as e:
+                await _broadcast_log('HMI', f"Error during temp release: {e}")
+            
+            # Pause background pings immediately
+            udp_target_ip = None
                 
             # Block ALL other background tasks (discovery, pings, loop)
             smp_in_progress = True
@@ -233,24 +233,23 @@ async def flash_firmware(ip: str):
     async with _firmware_fetch_locks[ip]:
         async with _discovery_lock:
             was_claimed = (udp_target_ip == ip)
-            if was_claimed:
-                await _broadcast_log('HMI', f"Temporarily releasing {ip} to safely flash firmware via SMP")
-                try:
-                    rel_req = pb2.Bonjour()
-                    rel_req.hmi_port = UDP_STATE_PORT
-                    rel_req.release = True
-                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rel_sock:
-                        rel_sock.bind(("0.0.0.0", 0))
-                        rel_sock.settimeout(0.5)
-                        rel_sock.sendto(rel_req.SerializeToString(), (ip, 30012))
-                        try:
-                            rel_sock.recvfrom(2048)
-                        except TimeoutError:
-                            pass
-                except Exception as e:
-                    await _broadcast_log('HMI', f"Error during temp release: {e}")
-                
-                udp_target_ip = None
+            await _broadcast_log('HMI', f"Silencing {ip} telemetry to safely perform SMP operation")
+            try:
+                rel_req = pb2.Bonjour()
+                rel_req.hmi_port = UDP_STATE_PORT
+                rel_req.release = True
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rel_sock:
+                    rel_sock.bind(("0.0.0.0", 0))
+                    rel_sock.settimeout(0.5)
+                    rel_sock.sendto(rel_req.SerializeToString(), (ip, 30012))
+                    try:
+                        rel_sock.recvfrom(2048)
+                    except TimeoutError:
+                        pass
+            except Exception as e:
+                await _broadcast_log('HMI', f"Error during temp release: {e}")
+            
+            udp_target_ip = None
                 
             smp_in_progress = True
             
