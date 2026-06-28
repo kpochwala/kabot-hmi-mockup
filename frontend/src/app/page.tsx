@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Check, ArrowRight, Square, Search, Settings, TerminalSquare, Activity, Play, Wand, Unplug, Download, Upload, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy } from 'lucide-react';
+import { Check, ArrowRight, Square, Search, Settings, TerminalSquare, Activity, Play, Wand, Unplug, Download, Upload, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, RefreshCw } from 'lucide-react';
 import { UPlotScope } from "@/components/ui/UPlotScope";
 import { SpinBox } from "@/components/ui/spinbox";
 import { ChannelConfig, ScopeState, TriggerType } from "@/types/scope";
@@ -261,7 +261,7 @@ export default function Home() {
   const [scriptName, setScriptName] = useState("control.py");
   
   const [robotIp, setRobotIp] = useState("localhost");
-  const [isAutoSearchEnabled, setIsAutoSearchEnabled] = useState(true);
+  const [isAutoSearchEnabled, setIsAutoSearchEnabled] = useState(false);
   const [backendPort, setBackendPort] = useState<number>(8000);
 
   useEffect(() => {
@@ -286,6 +286,14 @@ export default function Home() {
   const [manualDirectionsUI, setManualDirectionsUI] = useState<Set<ControlDirection>>(new Set());
   const lastManualControlRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  
+  const [firmwareStatusMap, setFirmwareStatusMap] = useState<Record<string, any[]>>({});
+  const [firmwareStatusErrorMap, setFirmwareStatusErrorMap] = useState<Record<string, string>>({});
+  const [isFetchingFirmware, setIsFetchingFirmware] = useState(false);
+  const [manualSmpIp, setManualSmpIp] = useState("");
+  const [isFlashingFirmware, setIsFlashingFirmware] = useState(false);
+  const [flashProgress, setFlashProgress] = useState(0);
+  const [flashError, setFlashError] = useState("");
 
   const getEditorCode = () => {
     if (editorRef.current) {
@@ -505,12 +513,46 @@ export default function Home() {
           setRobotConnectionStatus('disconnected');
           setSelectedRobotSerial("");
           setDiscoveredRobots(prev => prev.filter(r => r.ip !== msg.ip));
+          setFirmwareStatusMap(prev => {
+            const next = {...prev};
+            delete next[msg.ip];
+            return next;
+          });
+          setFirmwareStatusErrorMap(prev => {
+            const next = {...prev};
+            delete next[msg.ip];
+            return next;
+          });
         } else if (msg.type === "robot_released") {
           setConnectedRobot(null);
           setRobotConnectionStatus('disconnected');
           setDiscoveredRobots(prev => prev.map(r => 
             (msg.ip ? r.ip === msg.ip : true) ? { ...r, is_claimed: false, is_claimed_by_us: false } : r
           ));
+          setFirmwareStatusMap({});
+          setFirmwareStatusErrorMap({});
+        } else if (msg.type === "firmware_status") {
+          if (msg.ip) {
+            setFirmwareStatusMap(prev => ({...prev, [msg.ip]: msg.data}));
+            setFirmwareStatusErrorMap(prev => ({...prev, [msg.ip]: ""}));
+          }
+          setIsFetchingFirmware(false);
+        } else if (msg.type === "firmware_status_error") {
+          if (msg.ip) {
+            setFirmwareStatusErrorMap(prev => ({...prev, [msg.ip]: msg.message}));
+          }
+          setIsFetchingFirmware(false);
+        } else if (msg.type === "firmware_flash_progress") {
+          setIsFlashingFirmware(true);
+          setFlashProgress(msg.progress);
+          setFlashError("");
+        } else if (msg.type === "firmware_flash_success") {
+          setIsFlashingFirmware(false);
+          setFlashProgress(100);
+          setFlashError("");
+        } else if (msg.type === "firmware_flash_error") {
+          setIsFlashingFirmware(false);
+          setFlashError(msg.message);
         } else if (msg.type === "port_conflict") {
           setPortConflictError(msg.port);
         } else if (msg.type === "state") {
@@ -797,6 +839,9 @@ export default function Home() {
       clearManualDirections();
     }
   }, [activeWorkspace]);
+
+
+
 
   const handleRun = () => {
     const runtimeCode = getEditorCode();
@@ -1160,6 +1205,7 @@ export default function Home() {
   };
 
   const displayRobot = connectedRobot || discoveredRobots.find(r => `${r.serial}_${r.ip}` === selectedRobotSerial);
+  const activeSmpIp = manualSmpIp || displayRobot?.ip;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground text-sm font-sans">
@@ -1333,7 +1379,53 @@ export default function Home() {
 
         {activeWorkspace === "firmware" && (
             <div className="h-12 border-b flex items-center px-4 gap-4 shrink-0 bg-background w-full">
-                <Button size="sm" variant="default" className="font-bold" onClick={() => alert("This functionality will be available soon. Sorry.")}><Download className="w-4 h-4 mr-2" /> Firmware Update</Button>
+                <Button 
+                    size="sm" 
+                    variant="default" 
+                    className="font-bold" 
+                    disabled={isFlashingFirmware || !(manualSmpIp || displayRobot?.ip)}
+                    onClick={() => {
+                        const targetIp = manualSmpIp || displayRobot?.ip;
+                        if (targetIp && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                            setIsFlashingFirmware(true);
+                            setFlashProgress(0);
+                            setFlashError("");
+                            wsRef.current.send(JSON.stringify({ type: "flash_firmware", ip: targetIp }));
+                        }
+                    }}
+                >
+                    <Download className={`w-4 h-4 mr-2 ${isFlashingFirmware ? 'animate-bounce' : ''}`} /> 
+                    {isFlashingFirmware ? `Flashing... ${flashProgress.toFixed(1)}%` : "Firmware Update"}
+                </Button>
+                
+                {isFlashingFirmware && (
+                    <div className="flex-1 max-w-md mx-4 bg-muted rounded-full h-3 overflow-hidden">
+                        <div className="bg-primary h-full transition-all duration-300" style={{width: `${flashProgress}%`}} />
+                    </div>
+                )}
+                
+                {flashError && <span className="text-red-500 text-sm font-medium ml-4">{flashError}</span>}
+                
+                {!isFlashingFirmware && <div className="flex-1" />}
+                
+                <Button 
+                    size="icon" 
+                    variant="outline" 
+                    onClick={() => {
+                        setIsFetchingFirmware(true);
+                        const targetIp = manualSmpIp || displayRobot?.ip;
+                        if (targetIp) {
+                          setFirmwareStatusErrorMap(prev => ({...prev, [targetIp]: ""}));
+                        }
+                        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                            wsRef.current.send(JSON.stringify({ type: "refresh_firmware_status", ip: targetIp }));
+                        }
+                    }}
+                    title="Refresh Firmware Status"
+                    disabled={isFetchingFirmware || !(manualSmpIp || displayRobot?.ip)}
+                >
+                    <RefreshCw className={`w-4 h-4 ${isFetchingFirmware ? 'animate-spin text-muted-foreground' : ''}`} />
+                </Button>
                 <div className="w-px h-6 bg-border mx-2" />
                 <div className="flex-1" />
                 <div className="w-px h-6 bg-border mx-2" />
@@ -1507,6 +1599,62 @@ export default function Home() {
                                 </div>
                             ) : (
                                 <div className="text-sm text-muted-foreground italic mt-2">No robot is currently selected or connected.</div>
+                            )}
+                        </div>
+
+                        {/* Firmware Status */}
+                        <div className="flex flex-col gap-3">
+                            <div className="flex items-center justify-between border-b pb-1">
+                                <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">Firmware Status</h3>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs text-muted-foreground">Manual IP:</span>
+                                    <Input 
+                                        className="h-6 w-32 text-xs" 
+                                        placeholder="192.168.x.x" 
+                                        value={manualSmpIp}
+                                        onChange={(e) => setManualSmpIp(e.target.value)}
+                                    />
+                                </div>
+                            </div>
+                            
+                            {activeSmpIp && firmwareStatusErrorMap[activeSmpIp] ? (
+                                <div className="text-sm text-red-500 font-medium mt-2">{firmwareStatusErrorMap[activeSmpIp]}</div>
+                            ) : (activeSmpIp && firmwareStatusMap[activeSmpIp] && firmwareStatusMap[activeSmpIp].length > 0) ? (
+                                <div className="flex flex-col gap-4 mt-2">
+                                    {firmwareStatusMap[activeSmpIp].map((slot: any, idx: number) => (
+                                        <div key={idx} className="border rounded-md p-3 bg-muted/20">
+                                            <h4 className="font-bold text-sm mb-2 pb-1 border-b">Slot {slot.slot}</h4>
+                                            <div className="grid grid-cols-2 gap-4 text-sm">
+                                                <div className="flex flex-col">
+                                                    <span className="text-muted-foreground text-xs">Version</span>
+                                                    <span className="font-medium mt-1">{slot.version || "N/A"}</span>
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-muted-foreground text-xs">Hash</span>
+                                                    <span className="font-medium mt-1 font-mono">{slot.hash ? slot.hash.substring(0, 8) : "N/A"}</span>
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-muted-foreground text-xs">Active</span>
+                                                    <span className="font-medium mt-1">{slot.active ? "Yes" : "No"}</span>
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-muted-foreground text-xs">Confirmed</span>
+                                                    <span className="font-medium mt-1">{slot.confirmed ? "Yes" : "No"}</span>
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-muted-foreground text-xs">Pending</span>
+                                                    <span className="font-medium mt-1">{slot.pending ? "Yes" : "No"}</span>
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-muted-foreground text-xs">Bootable</span>
+                                                    <span className="font-medium mt-1">{slot.bootable ? "Yes" : "No"}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="text-sm text-muted-foreground italic mt-2">No firmware data available.</div>
                             )}
                         </div>
 

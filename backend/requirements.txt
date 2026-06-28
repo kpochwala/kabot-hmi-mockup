@@ -3,3 +3,4 @@ uvicorn
 websockets
 protobuf
 psutil
+smpclient
