@@ -1403,7 +1403,7 @@ export default function Home() {
                     </div>
                 )}
                 
-                {flashError && <span className="text-red-500 text-sm font-medium ml-4">{flashError}</span>}
+                {flashError && <span className="text-red-500 text-sm font-medium ml-4 cursor-help" title={flashError}>Flashing failed. Hover for details.</span>}
                 
                 {!isFlashingFirmware && <div className="flex-1" />}
                 
