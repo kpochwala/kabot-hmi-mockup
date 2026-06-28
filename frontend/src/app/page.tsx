@@ -1659,6 +1659,38 @@ export default function Home() {
                                                     <span className="font-medium mt-1">{slot.bootable ? "Yes" : "No"}</span>
                                                 </div>
                                             </div>
+                                            {slot.bootable && !slot.active && (
+                                                <Button 
+                                                    size="sm" 
+                                                    variant="secondary"
+                                                    className="mt-4 w-full"
+                                                    disabled={isFetchingFirmware || isFlashingFirmware}
+                                                    onClick={() => {
+                                                        if (activeSmpIp && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                                                            wsRef.current.send(JSON.stringify({ type: "boot_slot", ip: activeSmpIp, hash: slot.hash }));
+                                                            setIsFetchingFirmware(true);
+                                                        }
+                                                    }}
+                                                >
+                                                    Boot
+                                                </Button>
+                                            )}
+                                            {slot.bootable && slot.active && !slot.confirmed && (
+                                                <Button 
+                                                    size="sm" 
+                                                    variant="secondary"
+                                                    className="mt-4 w-full"
+                                                    disabled={isFetchingFirmware || isFlashingFirmware}
+                                                    onClick={() => {
+                                                        if (activeSmpIp && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                                                            wsRef.current.send(JSON.stringify({ type: "confirm_slot", ip: activeSmpIp, hash: slot.hash }));
+                                                            setIsFetchingFirmware(true);
+                                                        }
+                                                    }}
+                                                >
+                                                    Confirm
+                                                </Button>
+                                            )}
                                         </div>
                                     ))}
                                 </div>

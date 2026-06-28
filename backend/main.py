@@ -224,6 +224,83 @@ async def fetch_firmware_status(ip: str):
                     except Exception as e:
                         await _broadcast_log('HMI', f"Error during re-claim: {e}")
 
+async def boot_firmware_slot(ip: str, slot_hash: str):
+    global smp_in_progress, udp_target_ip
+    
+    was_claimed = False
+    async with _firmware_fetch_locks[ip]:
+        async with _discovery_lock:
+            was_claimed = (udp_target_ip == ip)
+            smp_in_progress = True
+            try:
+                import sys
+                import subprocess
+                await _broadcast_log('HMI', f"Setting slot pending and rebooting {ip}...")
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "smp_action.py", ip, "boot", slot_hash,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    raise RuntimeError(f"Boot action failed: {stderr.decode()}")
+                
+                await _broadcast_log('HMI', f"Robot {ip} rebooted. Re-establishing connection...")
+            except Exception as e:
+                await _broadcast_log('HMI', f"Error booting slot: {e}")
+            finally:
+                smp_in_progress = False
+
+    # Try to fetch status up to 10 times (30 seconds)
+    import json
+    import sys
+    import subprocess
+    for i in range(10):
+        await asyncio.sleep(3.0)
+        try:
+            proc_fetch = await asyncio.create_subprocess_exec(
+                sys.executable, "smp_fetcher.py", ip,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            stdout_fetch, _ = await proc_fetch.communicate()
+            if proc_fetch.returncode == 0:
+                result = json.loads(stdout_fetch.decode().strip())
+                if "data" in result:
+                    await _broadcast_json({'type': 'firmware_status', 'ip': ip, 'data': result["data"]})
+                    await _broadcast_log('HMI', f"Robot {ip} is back online!")
+                    if was_claimed:
+                        udp_target_ip = ip
+                    break
+        except Exception:
+            pass
+
+async def confirm_firmware_slot(ip: str, slot_hash: str):
+    global smp_in_progress
+    async with _firmware_fetch_locks[ip]:
+        async with _discovery_lock:
+            smp_in_progress = True
+            try:
+                import sys
+                import subprocess
+                await _broadcast_log('HMI', f"Confirming firmware slot on {ip}...")
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "smp_action.py", ip, "confirm", slot_hash,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    raise RuntimeError(f"Confirm failed: {stderr.decode()}")
+                await _broadcast_log('HMI', f"Slot confirmed on {ip}.")
+            except Exception as e:
+                await _broadcast_log('HMI', f"Error confirming slot: {e}")
+            finally:
+                smp_in_progress = False
+    
+    # Refresh status after releasing locks
+    asyncio.create_task(fetch_firmware_status(ip))
+
 async def flash_firmware(ip: str):
     global udp_target_ip, smp_in_progress
     if ip not in _firmware_fetch_locks:
@@ -919,6 +996,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     asyncio.create_task(fetch_firmware_status(target_ip))
                 else:
                     await _send_log(websocket, 'HMI', "Cannot refresh firmware status: no IP provided and no robot claimed")
+
+            elif msg.get('type') == 'boot_slot':
+                target_ip = msg.get('ip') or udp_target_ip
+                slot_hash = msg.get('hash')
+                if target_ip and slot_hash:
+                    asyncio.create_task(boot_firmware_slot(target_ip, slot_hash))
+                else:
+                    await _send_log(websocket, 'HMI', "Cannot boot slot: missing IP or hash")
+                    
+            elif msg.get('type') == 'confirm_slot':
+                target_ip = msg.get('ip') or udp_target_ip
+                slot_hash = msg.get('hash')
+                if target_ip and slot_hash:
+                    asyncio.create_task(confirm_firmware_slot(target_ip, slot_hash))
+                else:
+                    await _send_log(websocket, 'HMI', "Cannot confirm slot: missing IP or hash")
 
             elif msg.get('type') == 'flash_firmware':
                 target_ip = msg.get('ip') or udp_target_ip
