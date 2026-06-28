@@ -235,18 +235,45 @@ async def boot_firmware_slot(ip: str, slot_hash: str):
             try:
                 import sys
                 import subprocess
-                await _broadcast_log('HMI', f"Setting slot pending and rebooting {ip}...")
+                import json
+                
+                await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': 'Setting slot to pending'})
                 proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_action.py", ip, "boot", slot_hash,
+                    sys.executable, "smp_action.py", ip, "pending", slot_hash,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE
                 )
                 stdout, stderr = await proc.communicate()
                 if proc.returncode != 0:
-                    raise RuntimeError(f"Boot action failed: {stderr.decode()}")
+                    raise RuntimeError(f"Setting slot pending failed: {stderr.decode()}")
                 
-                await _broadcast_log('HMI', f"Robot {ip} rebooted. Re-establishing connection...")
+                await asyncio.sleep(0.5)
+                
+                await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': 'Fetching status before reboot'})
+                proc_fetch = await asyncio.create_subprocess_exec(
+                    sys.executable, "smp_fetcher.py", ip,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                stdout_fetch, _ = await proc_fetch.communicate()
+                if proc_fetch.returncode == 0:
+                    result = json.loads(stdout_fetch.decode().strip())
+                    if "data" in result:
+                        await _broadcast_json({'type': 'firmware_status', 'ip': ip, 'data': result["data"]})
+                
+                await asyncio.sleep(0.5)
+                
+                await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': 'Rebooting robot...'})
+                proc_reset = await asyncio.create_subprocess_exec(
+                    sys.executable, "smp_action.py", ip, "reset", "none",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                await proc_reset.communicate() # might fail if robot drops immediately
+                
+                await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': 'Waiting for boot...'})
             except Exception as e:
+                await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': ''})
                 await _broadcast_log('HMI', f"Error booting slot: {e}")
             finally:
                 smp_in_progress = False
@@ -258,6 +285,7 @@ async def boot_firmware_slot(ip: str, slot_hash: str):
     for i in range(10):
         await asyncio.sleep(3.0)
         try:
+            await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': f'Trying to fetch slot status... ({i+1}/10)'})
             proc_fetch = await asyncio.create_subprocess_exec(
                 sys.executable, "smp_fetcher.py", ip,
                 stdout=subprocess.PIPE,
@@ -268,12 +296,16 @@ async def boot_firmware_slot(ip: str, slot_hash: str):
                 result = json.loads(stdout_fetch.decode().strip())
                 if "data" in result:
                     await _broadcast_json({'type': 'firmware_status', 'ip': ip, 'data': result["data"]})
+                    await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': ''})
                     await _broadcast_log('HMI', f"Robot {ip} is back online!")
                     if was_claimed:
                         udp_target_ip = ip
                     break
         except Exception:
             pass
+    else:
+        # Loop finished without breaking
+        await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': ''})
 
 async def confirm_firmware_slot(ip: str, slot_hash: str):
     global smp_in_progress

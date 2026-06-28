@@ -14,12 +14,12 @@ async def main():
     action = sys.argv[2]
     hash_hex = sys.argv[3]
     
-    if action not in ("boot", "confirm"):
+    if action not in ("pending", "reset", "confirm", "boot"):
         print(json.dumps({"error": f"Unknown action: {action}"}))
         return
 
     try:
-        hash_bytes = bytes.fromhex(hash_hex)
+        hash_bytes = bytes.fromhex(hash_hex) if hash_hex and hash_hex != "none" else b''
     except ValueError as e:
         print(json.dumps({"error": f"Invalid hash: {e}"}))
         return
@@ -28,7 +28,15 @@ async def main():
         client = SMPClient(SMPUDPTransport(mtu=256), ip, timeout_s=3.0)
         await client.connect()
         
-        if action == "boot":
+        if action == "pending":
+            await client.request(ImageStatesWrite(hash=hash_bytes, confirm=False))
+            print(json.dumps({"success": True, "action": "pending"}))
+            
+        elif action == "reset":
+            await client.request(ResetWrite())
+            print(json.dumps({"success": True, "action": "reset"}))
+            
+        elif action == "boot":
             # Set the image as pending (test)
             await client.request(ImageStatesWrite(hash=hash_bytes, confirm=False))
             # Reboot the device

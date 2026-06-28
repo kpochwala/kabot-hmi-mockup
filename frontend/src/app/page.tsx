@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Check, ArrowRight, Square, Search, Settings, TerminalSquare, Activity, Play, Wand, Unplug, Download, Upload, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, RefreshCw } from 'lucide-react';
+import { Check, ArrowRight, Square, Search, Settings, TerminalSquare, Activity, Play, Wand, Unplug, Download, Upload, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, RefreshCw, CheckCircle } from 'lucide-react';
 import { UPlotScope } from "@/components/ui/UPlotScope";
 import { SpinBox } from "@/components/ui/spinbox";
 import { ChannelConfig, ScopeState, TriggerType } from "@/types/scope";
@@ -295,6 +295,8 @@ export default function Home() {
   const [flashPhase, setFlashPhase] = useState("");
   const [flashProgress, setFlashProgress] = useState(0);
   const [flashError, setFlashError] = useState("");
+  const [bootingSlotHash, setBootingSlotHash] = useState("");
+  const [bootingPhase, setBootingPhase] = useState("");
 
   const getEditorCode = () => {
     if (editorRef.current) {
@@ -538,6 +540,11 @@ export default function Home() {
             setFirmwareStatusErrorMap(prev => ({...prev, [msg.ip]: ""}));
           }
           setIsFetchingFirmware(false);
+          setBootingSlotHash("");
+          setBootingPhase("");
+        } else if (msg.type === "firmware_boot_phase") {
+          if (msg.hash) setBootingSlotHash(msg.hash);
+          if (msg.phase !== undefined) setBootingPhase(msg.phase);
         } else if (msg.type === "firmware_status_error") {
           if (msg.ip) {
             setFirmwareStatusErrorMap(prev => ({...prev, [msg.ip]: msg.message}));
@@ -1632,7 +1639,43 @@ export default function Home() {
                                 <div className="flex flex-col gap-4 mt-2">
                                     {firmwareStatusMap[activeSmpIp].map((slot: any, idx: number) => (
                                         <div key={idx} className="border rounded-md p-3 bg-muted/20">
-                                            <h4 className="font-bold text-sm mb-2 pb-1 border-b">Slot {slot.slot}</h4>
+                                            <div className="flex items-center justify-between mb-2 pb-1 border-b">
+                                                <h4 className="font-bold text-sm">Slot {slot.slot}</h4>
+                                                <div className="flex gap-2">
+                                                    {slot.bootable && !slot.active && (
+                                                        <Button 
+                                                            size="sm" 
+                                                            disabled={isFetchingFirmware || isFlashingFirmware || (bootingSlotHash === slot.hash && bootingPhase !== "")}
+                                                            onClick={() => {
+                                                                if (activeSmpIp && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                                                                    setBootingSlotHash(slot.hash);
+                                                                    setBootingPhase("Starting boot...");
+                                                                    wsRef.current.send(JSON.stringify({ type: "boot_slot", ip: activeSmpIp, hash: slot.hash }));
+                                                                    setIsFetchingFirmware(true);
+                                                                }
+                                                            }}
+                                                        >
+                                                            <Upload className={`w-4 h-4 mr-2 ${bootingSlotHash === slot.hash && bootingPhase !== "" ? 'animate-pulse' : ''}`} /> 
+                                                            {bootingSlotHash === slot.hash && bootingPhase !== "" ? bootingPhase : "Boot"}
+                                                        </Button>
+                                                    )}
+                                                    {slot.bootable && slot.active && !slot.confirmed && (
+                                                        <Button 
+                                                            size="sm" 
+                                                            disabled={isFetchingFirmware || isFlashingFirmware}
+                                                            onClick={() => {
+                                                                if (activeSmpIp && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                                                                    wsRef.current.send(JSON.stringify({ type: "confirm_slot", ip: activeSmpIp, hash: slot.hash }));
+                                                                    setIsFetchingFirmware(true);
+                                                                }
+                                                            }}
+                                                        >
+                                                            <CheckCircle className="w-4 h-4 mr-2" /> 
+                                                            Confirm
+                                                        </Button>
+                                                    )}
+                                                </div>
+                                            </div>
                                             <div className="grid grid-cols-2 gap-4 text-sm">
                                                 <div className="flex flex-col">
                                                     <span className="text-muted-foreground text-xs">Version</span>
@@ -1659,38 +1702,6 @@ export default function Home() {
                                                     <span className="font-medium mt-1">{slot.bootable ? "Yes" : "No"}</span>
                                                 </div>
                                             </div>
-                                            {slot.bootable && !slot.active && (
-                                                <Button 
-                                                    size="sm" 
-                                                    variant="secondary"
-                                                    className="mt-4 w-full"
-                                                    disabled={isFetchingFirmware || isFlashingFirmware}
-                                                    onClick={() => {
-                                                        if (activeSmpIp && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                                                            wsRef.current.send(JSON.stringify({ type: "boot_slot", ip: activeSmpIp, hash: slot.hash }));
-                                                            setIsFetchingFirmware(true);
-                                                        }
-                                                    }}
-                                                >
-                                                    Boot
-                                                </Button>
-                                            )}
-                                            {slot.bootable && slot.active && !slot.confirmed && (
-                                                <Button 
-                                                    size="sm" 
-                                                    variant="secondary"
-                                                    className="mt-4 w-full"
-                                                    disabled={isFetchingFirmware || isFlashingFirmware}
-                                                    onClick={() => {
-                                                        if (activeSmpIp && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                                                            wsRef.current.send(JSON.stringify({ type: "confirm_slot", ip: activeSmpIp, hash: slot.hash }));
-                                                            setIsFetchingFirmware(true);
-                                                        }
-                                                    }}
-                                                >
-                                                    Confirm
-                                                </Button>
-                                            )}
                                         </div>
                                     ))}
                                 </div>
