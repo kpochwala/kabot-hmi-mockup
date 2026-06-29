@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Check, ArrowRight, Square, Search, Settings, TerminalSquare, Activity, Play, Wand, Unplug, Download, Upload, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, RefreshCw, CheckCircle } from 'lucide-react';
+import { Check, ArrowRight, Square, Search, Settings, TerminalSquare, Activity, Play, Wand, Unplug, Download, Upload, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, RefreshCw, CheckCircle, Lock } from 'lucide-react';
 import { UPlotScope } from "@/components/ui/UPlotScope";
 import { SpinBox } from "@/components/ui/spinbox";
 import { ChannelConfig, ScopeState, TriggerType } from "@/types/scope";
@@ -233,6 +233,47 @@ export default function Home() {
       localStorage.setItem("last_firmware_update_stats", JSON.stringify(lastFlashStats));
     }
   }, [lastFlashStats]);
+  
+  const [isSettingsLocked, setIsSettingsLocked] = useState(false);
+  
+  useEffect(() => {
+    const locked = localStorage.getItem("kabot_settings_locked");
+    if (locked === "true") setIsSettingsLocked(true);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("kabot_settings_locked", String(isSettingsLocked));
+  }, [isSettingsLocked]);
+
+  useEffect(() => {
+    if (!isSettingsLocked || activeWorkspace !== "firmware") return;
+
+    let keySequence: string[] = [];
+    const targetSequence = ['arrowup', 'arrowup', 'arrowdown', 'arrowdown', 'arrowleft', 'arrowright', 'arrowleft', 'arrowright', 'b', 'a'];
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      keySequence.push(e.key.toLowerCase());
+      if (keySequence.length > targetSequence.length) {
+        keySequence.shift();
+      }
+      
+      if (keySequence.length === targetSequence.length) {
+        let match = true;
+        for (let i = 0; i < targetSequence.length; i++) {
+          if (keySequence[i] !== targetSequence[i]) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          setIsSettingsLocked(false);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [isSettingsLocked, activeWorkspace]);
   
   // Track triggered wait state
   const isTriggerWaitingRef = useRef(false);
@@ -1315,6 +1356,14 @@ export default function Home() {
       </div>
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
+        {isSettingsLocked && activeWorkspace === "firmware" && (
+            <div className="absolute inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center">
+              <div className="grid w-full max-w-md gap-4 rounded-xl bg-popover p-6 text-center shadow-lg ring-1 ring-foreground/10 animate-in fade-in-0 zoom-in-95">
+                <h2 className="text-lg font-semibold tracking-tight">Settings are locked.</h2>
+                <p className="text-sm text-muted-foreground">Have you played Contra?</p>
+              </div>
+            </div>
+        )}
         
         {/* Contextual Toolbar */}
         {activeWorkspace === "code" && (
@@ -1651,8 +1700,14 @@ export default function Home() {
 
             {activeWorkspace === "firmware" && (
                 <ResizablePanelGroup orientation="vertical" className="h-full">
-                  <ResizablePanel defaultSize={60} minSize={20} className="flex flex-col bg-background border-b p-4">
-                     <h2 className="text-xl font-bold mb-6">Settings</h2>
+                  <ResizablePanel defaultSize={60} minSize={20} className="flex flex-col bg-background border-b p-4 relative">
+                     <h2 className="text-xl font-bold mb-6 flex justify-between items-center">
+                       Settings
+                       <Button variant="outline" size="sm" onClick={() => setIsSettingsLocked(true)}>
+                         <Lock className="w-4 h-4 mr-2" />
+                         Lock Settings
+                       </Button>
+                     </h2>
                      <div className="flex flex-col gap-8 max-w-2xl">
                         
                         {/* HMI Status */}
