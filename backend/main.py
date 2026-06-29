@@ -128,16 +128,24 @@ _firmware_fetch_locks: dict[str, asyncio.Lock] = {}
 _discovery_lock = asyncio.Lock()
 smp_in_progress = False
 
-async def fetch_firmware_status(ip: str):
-    global udp_target_ip, smp_in_progress
+import smp_fetcher
+import smp_action
+import smp_uploader
+
+def get_firmware_fetch_lock(ip: str) -> asyncio.Lock:
     if ip not in _firmware_fetch_locks:
         _firmware_fetch_locks[ip] = asyncio.Lock()
+    return _firmware_fetch_locks[ip]
+
+async def fetch_firmware_status(ip: str):
+    global udp_target_ip, smp_in_progress
+    lock = get_firmware_fetch_lock(ip)
         
-    if _firmware_fetch_locks[ip].locked():
+    if lock.locked():
         await _broadcast_log('HMI', f"Firmware fetch already in progress for {ip}, skipping")
         return
 
-    async with _firmware_fetch_locks[ip]:
+    async with lock:
         async with _discovery_lock:
             # Check if this robot is currently claimed
             was_claimed = (udp_target_ip == ip)
@@ -167,32 +175,9 @@ async def fetch_firmware_status(ip: str):
             # Wait a long time for the robot's network stack to completely clear out old telemetry
             await asyncio.sleep(2.0)
 
-            await _broadcast_log('HMI', f"Fetching firmware status from {ip} via isolated subprocess")
+            await _broadcast_log('HMI', f"Fetching firmware status from {ip}")
             try:
-                import subprocess
-                import json
-                import sys
-                
-                # Run the exact same code as the CLI in an isolated process
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_fetcher.py", ip,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                stdout, stderr = await proc.communicate()
-                
-                if proc.returncode != 0:
-                    raise Exception(f"Subprocess failed: {stderr.decode()}")
-                    
-                output = stdout.decode().strip()
-                try:
-                    result = json.loads(output)
-                except json.JSONDecodeError:
-                    raise Exception(f"Invalid JSON from subprocess: {output}")
-                    
-                if "error" in result:
-                    raise Exception(result["error"])
-                    
+                result = await smp_fetcher.fetch_firmware_status(ip)
                 if "data" in result:
                     await _broadcast_json({'type': 'firmware_status', 'ip': ip, 'data': result["data"]})
                     await _broadcast_log('HMI', f"Firmware status fetched successfully from {ip}")
@@ -228,48 +213,32 @@ async def boot_firmware_slot(ip: str, slot_hash: str):
     global smp_in_progress, udp_target_ip
     
     was_claimed = False
-    async with _firmware_fetch_locks[ip]:
+    lock = get_firmware_fetch_lock(ip)
+    async with lock:
         async with _discovery_lock:
             was_claimed = (udp_target_ip == ip)
             smp_in_progress = True
             try:
-                import sys
-                import subprocess
-                import json
-                
                 await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': 'Setting slot to pending'})
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_action.py", ip, "pending", slot_hash,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    raise RuntimeError(f"Setting slot pending failed: {stderr.decode()}")
+                await smp_action.run_smp_action(ip, "pending", slot_hash)
                 
                 await asyncio.sleep(0.5)
                 
                 await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': 'Fetching status before reboot'})
-                proc_fetch = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_fetcher.py", ip,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                stdout_fetch, _ = await proc_fetch.communicate()
-                if proc_fetch.returncode == 0:
-                    result = json.loads(stdout_fetch.decode().strip())
+                try:
+                    result = await smp_fetcher.fetch_firmware_status(ip)
                     if "data" in result:
                         await _broadcast_json({'type': 'firmware_status', 'ip': ip, 'data': result["data"]})
+                except Exception as fetch_err:
+                    await _broadcast_log('HMI', f"Failed to fetch status before reboot: {fetch_err}")
                 
                 await asyncio.sleep(0.5)
                 
                 await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': 'Rebooting robot...'})
-                proc_reset = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_action.py", ip, "reset", "none",
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                await proc_reset.communicate() # might fail if robot drops immediately
+                try:
+                    await smp_action.run_smp_action(ip, "reset", "none")
+                except Exception:
+                    pass # might fail if robot drops immediately
                 
                 await _broadcast_json({'type': 'firmware_boot_phase', 'ip': ip, 'hash': slot_hash, 'phase': 'Waiting for boot...'})
             except Exception as e:
@@ -309,21 +278,13 @@ async def boot_firmware_slot(ip: str, slot_hash: str):
 
 async def confirm_firmware_slot(ip: str, slot_hash: str):
     global smp_in_progress
-    async with _firmware_fetch_locks[ip]:
+    lock = get_firmware_fetch_lock(ip)
+    async with lock:
         async with _discovery_lock:
             smp_in_progress = True
             try:
-                import sys
-                import subprocess
                 await _broadcast_log('HMI', f"Confirming firmware slot on {ip}...")
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_action.py", ip, "confirm", slot_hash,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    raise RuntimeError(f"Confirm failed: {stderr.decode()}")
+                await smp_action.run_smp_action(ip, "confirm", slot_hash)
                 await _broadcast_log('HMI', f"Slot confirmed on {ip}.")
             except Exception as e:
                 await _broadcast_log('HMI', f"Error confirming slot: {e}")
@@ -368,14 +329,13 @@ async def fetch_github_releases():
 
 async def flash_firmware(ip: str, fw_url: str = None):
     global udp_target_ip, smp_in_progress
-    if ip not in _firmware_fetch_locks:
-        _firmware_fetch_locks[ip] = asyncio.Lock()
+    lock = get_firmware_fetch_lock(ip)
         
-    if _firmware_fetch_locks[ip].locked():
+    if lock.locked():
         await _broadcast_log('HMI', f"Firmware operation already in progress for {ip}, skipping")
         return
 
-    async with _firmware_fetch_locks[ip]:
+    async with lock:
         async with _discovery_lock:
             was_claimed = (udp_target_ip == ip)
             if was_claimed:
@@ -402,42 +362,23 @@ async def flash_firmware(ip: str, fw_url: str = None):
             await asyncio.sleep(2.0)
 
             try:
-                import subprocess
-                import json
-                import sys
-
                 # Pre-flight check: fetch firmware status
                 await _broadcast_json({'type': 'firmware_flash_phase', 'ip': ip, 'phase': 'Updating firmware status'})
                 await _broadcast_log('HMI', f"Fetching firmware status from {ip} before flashing...")
-                proc_fetch = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_fetcher.py", ip,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                stdout_fetch, stderr_fetch = await proc_fetch.communicate()
-                
-                if proc_fetch.returncode != 0:
-                    raise RuntimeError(f"Status fetch failed (exit {proc_fetch.returncode}): {stderr_fetch.decode()}")
-                    
-                output_fetch = stdout_fetch.decode().strip()
                 try:
-                    result_fetch = json.loads(output_fetch)
-                    if "error" in result_fetch:
-                        raise RuntimeError(f"Status fetch failed: {result_fetch['error']}")
+                    result_fetch = await smp_fetcher.fetch_firmware_status(ip)
                     if "data" in result_fetch:
                         await _broadcast_json({'type': 'firmware_status', 'ip': ip, 'data': result_fetch["data"]})
                     else:
                         raise RuntimeError("Status fetch failed: no data")
-                except json.JSONDecodeError:
-                    raise RuntimeError(f"Status fetch failed (invalid JSON): {output_fetch}")
+                except Exception as fetch_err:
+                    raise RuntimeError(f"Status fetch failed: {fetch_err}")
 
                 # Give Zephyr UDP stack a moment to clean up before opening a new socket
                 await asyncio.sleep(0.5)
 
                 await _broadcast_json({'type': 'firmware_flash_phase', 'ip': ip, 'phase': 'Uploading firmware'})
                 await _broadcast_log('HMI', f"Flashing firmware to {ip} via isolated subprocess")
-                
-                fw_path = "/home/kpo/git/kabot-io/kabot-zephyr/build/esp32s3_devkitc/app/zephyr/zephyr.signed.bin"
                 
                 if fw_url:
                     await _broadcast_json({'type': 'firmware_flash_phase', 'ip': ip, 'phase': 'Downloading firmware'})
@@ -457,62 +398,33 @@ async def flash_firmware(ip: str, fw_url: str = None):
                     try:
                         loop = asyncio.get_event_loop()
                         fw_path = await loop.run_in_executor(None, _download)
-                        await _broadcast_log('HMI', f"Downloaded firmware to {fw_path}")
+                        await _broadcast_log('HMI', f"Downloaded firmware to temporary file for flashing")
                         # Re-broadcast phase back to Uploading firmware
                         await _broadcast_json({'type': 'firmware_flash_phase', 'ip': ip, 'phase': 'Uploading firmware'})
                     except Exception as e:
                         raise RuntimeError(f"Failed to download firmware: {e}")
+                else:
+                    raise RuntimeError("No firmware URL provided for flashing")
                 
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_uploader.py", ip, fw_path,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
+                async def progress_cb(prog: float):
+                    await _broadcast_json({
+                        'type': 'firmware_flash_progress',
+                        'ip': ip,
+                        'progress': prog
+                    })
                 
-                while True:
-                    line = await proc.stdout.readline()
-                    if not line:
-                        break
-                    
-                    output = line.decode().strip()
-                    try:
-                        result = json.loads(output)
-                        if "error" in result:
-                            raise Exception(result["error"])
-                        if "progress" in result:
-                            await _broadcast_json({
-                                'type': 'firmware_flash_progress',
-                                'ip': ip,
-                                'progress': result['progress'],
-                                'offset': result['offset'],
-                                'total': result['total']
-                            })
-                    except json.JSONDecodeError:
-                        await _broadcast_log('HMI', f"Uploader: {output}")
-                        
-                await proc.wait()
-                if proc.returncode != 0:
-                    stderr = await proc.stderr.read()
-                    raise Exception(f"Subprocess failed: {stderr.decode()}")
+                await smp_uploader.upload_firmware(ip, fw_path, progress_cb)
                     
                 await asyncio.sleep(0.5)
                 await _broadcast_json({'type': 'firmware_flash_phase', 'ip': ip, 'phase': 'Updating firmware status'})
                 
                 # Post-flight fetch to get updated slots
-                proc_fetch_post = await asyncio.create_subprocess_exec(
-                    sys.executable, "smp_fetcher.py", ip,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                stdout_fetch_post, stderr_fetch_post = await proc_fetch_post.communicate()
-                if proc_fetch_post.returncode == 0:
-                    output_fetch_post = stdout_fetch_post.decode().strip()
-                    try:
-                        result_fetch_post = json.loads(output_fetch_post)
-                        if "data" in result_fetch_post:
-                            await _broadcast_json({'type': 'firmware_status', 'ip': ip, 'data': result_fetch_post["data"]})
-                    except:
-                        pass
+                try:
+                    result_fetch_post = await smp_fetcher.fetch_firmware_status(ip)
+                    if "data" in result_fetch_post:
+                        await _broadcast_json({'type': 'firmware_status', 'ip': ip, 'data': result_fetch_post["data"]})
+                except Exception:
+                    pass
                     
                 await _broadcast_log('HMI', f"Firmware flash completed successfully for {ip}")
                 await _broadcast_json({'type': 'firmware_flash_success', 'ip': ip})

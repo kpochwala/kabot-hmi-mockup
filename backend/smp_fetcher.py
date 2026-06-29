@@ -1,20 +1,12 @@
-import sys
-import json
 import asyncio
 from smpclient.transport.udp import SMPUDPTransport
 from smpclient import SMPClient
 from smpclient.requests.image_management import ImageStatesRead
 
-async def main():
-    if len(sys.argv) < 2:
-        print(json.dumps({"error": "Missing IP"}))
-        return
-    ip = sys.argv[1]
-    
-    # We use exactly what smpmgr uses internally, with default MTU to be identical to smpmgr CLI.
-    # smpmgr default MTU is 4096 (actually depends on transport, but we just omit to use default).
+async def fetch_firmware_status(ip: str) -> dict:
+    # We explicitly set MTU to 1200 to ensure reliable SMP responses over UDP without triggering Zephyr stack overflow.
+    client = SMPClient(SMPUDPTransport(mtu=1200), ip, timeout_s=3.0)
     try:
-        client = SMPClient(SMPUDPTransport(mtu=1200), ip, timeout_s=3.0)
         await client.connect()
         
         response = None
@@ -41,15 +33,24 @@ async def main():
                     'active': getattr(img, 'active', False),
                     'permanent': getattr(img, 'permanent', False),
                 })
-            print(json.dumps({"data": images}))
+            return {"data": images}
         else:
-            print(json.dumps({"error": "Unexpected response format"}))
-            
-    except Exception as e:
-        print(json.dumps({"error": str(e)}))
+            raise ValueError("Unexpected response format")
     finally:
-        if 'client' in locals():
-            await client.disconnect()
+        await client.disconnect()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import sys
+    import json
+    if len(sys.argv) < 2:
+        print(json.dumps({"error": "Missing IP"}))
+        sys.exit(1)
+    
+    async def _run():
+        try:
+            res = await fetch_firmware_status(sys.argv[1])
+            print(json.dumps(res))
+        except Exception as e:
+            print(json.dumps({"error": str(e)}))
+    
+    asyncio.run(_run())
