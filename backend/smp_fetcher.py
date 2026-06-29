@@ -14,10 +14,18 @@ async def main():
     # We use exactly what smpmgr uses internally, with default MTU to be identical to smpmgr CLI.
     # smpmgr default MTU is 4096 (actually depends on transport, but we just omit to use default).
     try:
-        # Omitting mtu uses the transport default (1500) just like smpmgr
-        client = SMPClient(SMPUDPTransport(mtu=256), ip, timeout_s=3.0)
+        client = SMPClient(SMPUDPTransport(mtu=1200), ip, timeout_s=3.0)
         await client.connect()
-        response = await client.request(ImageStatesRead())
+        
+        response = None
+        for attempt in range(10):
+            try:
+                response = await client.request(ImageStatesRead())
+                break
+            except Exception as e:
+                if attempt == 9:
+                    raise
+                await asyncio.sleep(0.5)
         
         if hasattr(response, 'images'):
             images = []

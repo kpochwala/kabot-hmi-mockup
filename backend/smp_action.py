@@ -25,27 +25,36 @@ async def main():
         return
 
     try:
-        client = SMPClient(SMPUDPTransport(mtu=256), ip, timeout_s=3.0)
+        client = SMPClient(SMPUDPTransport(mtu=1200), ip, timeout_s=3.0)
         await client.connect()
         
+        async def do_request(req):
+            for attempt in range(10):
+                try:
+                    return await client.request(req)
+                except Exception as e:
+                    if attempt == 9:
+                        raise
+                    await asyncio.sleep(0.5)
+
         if action == "pending":
-            await client.request(ImageStatesWrite(hash=hash_bytes, confirm=False))
+            await do_request(ImageStatesWrite(hash=hash_bytes, confirm=False))
             print(json.dumps({"success": True, "action": "pending"}))
             
         elif action == "reset":
-            await client.request(ResetWrite())
+            await do_request(ResetWrite())
             print(json.dumps({"success": True, "action": "reset"}))
             
         elif action == "boot":
             # Set the image as pending (test)
-            await client.request(ImageStatesWrite(hash=hash_bytes, confirm=False))
+            await do_request(ImageStatesWrite(hash=hash_bytes, confirm=False))
             # Reboot the device
-            await client.request(ResetWrite())
+            await do_request(ResetWrite())
             print(json.dumps({"success": True, "action": "boot"}))
         
         elif action == "confirm":
             # Confirm the active image
-            await client.request(ImageStatesWrite(hash=hash_bytes, confirm=True))
+            await do_request(ImageStatesWrite(hash=hash_bytes, confirm=True))
             print(json.dumps({"success": True, "action": "confirm"}))
             
     except Exception as e:

@@ -25,7 +25,7 @@ async def main():
 
     try:
         # Use 256 MTU as negotiated with the user to prevent Zephyr stack overflow
-        client = SMPClient(SMPUDPTransport(mtu=256), ip, timeout_s=3.0)
+        client = SMPClient(SMPUDPTransport(mtu=1200), ip, timeout_s=3.0)
         await client.connect()
         
         # Upload generator yields the current offset

@@ -333,7 +333,40 @@ async def confirm_firmware_slot(ip: str, slot_hash: str):
     # Refresh status after releasing locks
     asyncio.create_task(fetch_firmware_status(ip))
 
-async def flash_firmware(ip: str):
+async def fetch_github_releases():
+    import urllib.request
+    import urllib.error
+    import json
+    
+    url = "https://api.github.com/repos/kabot-io/kabot-zephyr/releases"
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'kabot-hmi-mockup'})
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            with urllib.request.urlopen(req) as response:
+                return json.loads(response.read().decode())
+        releases_data = await loop.run_in_executor(None, _fetch)
+        
+        valid_releases = []
+        for release in releases_data:
+            assets = release.get('assets', [])
+            for asset in assets:
+                if asset.get('name', '').endswith('.signed.bin'):
+                    valid_releases.append({
+                        'name': release.get('name') or release.get('tag_name'),
+                        'tag': release.get('tag_name'),
+                        'url': asset.get('browser_download_url'),
+                        'published_at': release.get('published_at')
+                    })
+                    break
+                    
+        await _broadcast_json({'type': 'github_releases', 'data': valid_releases})
+    except urllib.error.URLError as e:
+        await _broadcast_json({'type': 'github_releases', 'error': f"Failed to fetch releases: {e.reason}"})
+    except Exception as e:
+        await _broadcast_json({'type': 'github_releases', 'error': f"Failed to fetch releases: {e}"})
+
+async def flash_firmware(ip: str, fw_url: str = None):
     global udp_target_ip, smp_in_progress
     if ip not in _firmware_fetch_locks:
         _firmware_fetch_locks[ip] = asyncio.Lock()
@@ -405,6 +438,30 @@ async def flash_firmware(ip: str):
                 await _broadcast_log('HMI', f"Flashing firmware to {ip} via isolated subprocess")
                 
                 fw_path = "/home/kpo/git/kabot-io/kabot-zephyr/build/esp32s3_devkitc/app/zephyr/zephyr.signed.bin"
+                
+                if fw_url:
+                    await _broadcast_json({'type': 'firmware_flash_phase', 'ip': ip, 'phase': 'Downloading firmware'})
+                    await _broadcast_log('HMI', f"Downloading firmware from {fw_url}...")
+                    
+                    import urllib.request
+                    import tempfile
+                    import shutil
+                    def _download():
+                        req = urllib.request.Request(fw_url, headers={'User-Agent': 'kabot-hmi-mockup'})
+                        with urllib.request.urlopen(req) as response:
+                            tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".signed.bin")
+                            shutil.copyfileobj(response, tmp_file)
+                            tmp_file.close()
+                            return tmp_file.name
+                            
+                    try:
+                        loop = asyncio.get_event_loop()
+                        fw_path = await loop.run_in_executor(None, _download)
+                        await _broadcast_log('HMI', f"Downloaded firmware to {fw_path}")
+                        # Re-broadcast phase back to Uploading firmware
+                        await _broadcast_json({'type': 'firmware_flash_phase', 'ip': ip, 'phase': 'Uploading firmware'})
+                    except Exception as e:
+                        raise RuntimeError(f"Failed to download firmware: {e}")
                 
                 proc = await asyncio.create_subprocess_exec(
                     sys.executable, "smp_uploader.py", ip, fw_path,
@@ -820,7 +877,7 @@ async def continuous_ping():
                     last_ping_status = 'connected'
         except Exception:
             fail_count += 1
-            if fail_count >= 3:
+            if fail_count >= 10:
                 print(f"Ping failed {fail_count} times. Disconnecting.")
                 await _broadcast_json({'type': 'robot_disconnected', 'ip': udp_target_ip})
                 udp_target_ip = None
@@ -1029,6 +1086,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 else:
                     await _send_log(websocket, 'HMI', "Cannot refresh firmware status: no IP provided and no robot claimed")
 
+            elif msg.get('type') == 'fetch_github_releases':
+                asyncio.create_task(fetch_github_releases())
+
             elif msg.get('type') == 'boot_slot':
                 target_ip = msg.get('ip') or udp_target_ip
                 slot_hash = msg.get('hash')
@@ -1047,8 +1107,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg.get('type') == 'flash_firmware':
                 target_ip = msg.get('ip') or udp_target_ip
+                fw_url = msg.get('url')
                 if target_ip:
-                    asyncio.create_task(flash_firmware(target_ip))
+                    asyncio.create_task(flash_firmware(target_ip, fw_url))
                 else:
                     await _send_log(websocket, 'HMI', "Cannot flash firmware: no IP provided")
 
